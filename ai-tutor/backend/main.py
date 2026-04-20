@@ -7,9 +7,11 @@ import fitz
 import io
 import json
 import numpy as np
+import os
 from typing import List
 from sentence_transformers import SentenceTransformer
 from pathlib import Path
+from groq import Groq
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -39,6 +41,7 @@ app.add_middleware(
 
 class QueryRequest(BaseModel):
     query: str
+    filename: str = "document"
 
 class QueryResponse(BaseModel):
     answer: str
@@ -197,6 +200,50 @@ def similarity_search(query: str, embedding_file_path: str, top_k: int = 3) -> L
     logger.info(f"Found {len(results)} top results for query: '{query}'")
     return results
 
+def generate_rag_prompt(query: str, chunks: List[SearchResult]) -> str:
+    context = "\n\n".join([f"Chunk {i+1}: {chunk.text}" for i, chunk in enumerate(chunks)])
+    return f"""You are an AI tutor. Answer ONLY from the context below. If the context doesn't contain enough information to answer the question, say "I don't have enough information to answer this question based on the provided context."
+
+Context:
+{context}
+
+Question: {query}
+
+Answer:"""
+
+def call_llm(prompt: str) -> str:
+    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    try:
+        response = client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=1000
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"LLM call failed: {str(e)}")
+        return "I apologize, but I'm unable to generate a response at the moment. Please try again later."
+
+def generate_rag_answer(query: str, filename: str, top_k: int = 3) -> str:
+    try:
+        base_filename = Path(filename).stem
+        embedding_file = EMBEDDINGS_DIR / f"{base_filename}_embeddings.json"
+        
+        if not embedding_file.exists():
+            return "No document embeddings found. Please upload a PDF first."
+        
+        chunks = similarity_search(query, str(embedding_file), top_k=top_k)
+        if not chunks:
+            return "No relevant information found in the document."
+        
+        prompt = generate_rag_prompt(query, chunks)
+        answer = call_llm(prompt)
+        return answer
+    except Exception as e:
+        logger.error(f"RAG answer generation failed: {str(e)}")
+        return "An error occurred while processing your question. Please try again."
+
 @app.get("/health", summary="Health Check")
 async def health_check():
     logger.info("Health check endpoint pinged.")
@@ -207,8 +254,10 @@ async def ask_tutor(request: QueryRequest):
     logger.info(f"Received query: {request.query}")
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
-    response_text = f"You asked: '{request.query}'. This is a placeholder response from the AI tutor. RAG pipeline goes here."
-    return QueryResponse(answer=response_text)
+    
+    answer = generate_rag_answer(request.query, request.filename)
+    
+    return QueryResponse(answer=answer)
 
 @app.post("/upload", response_model=PDFUploadResponse, summary="Upload and Extract Text from PDF")
 async def upload_pdf(file: UploadFile = File(...)):
