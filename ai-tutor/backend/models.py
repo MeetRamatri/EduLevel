@@ -1,7 +1,7 @@
 """Pydantic models for request/response validation."""
 
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
 
 class QueryRequest(BaseModel):
@@ -13,6 +13,7 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     """Response model for AI tutor answers."""
     answer: str
+    image: Optional["ImageSearchResult"] = None
 
 
 class Chunk(BaseModel):
