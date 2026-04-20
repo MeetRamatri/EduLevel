@@ -12,12 +12,19 @@ from typing import List
 from sentence_transformers import SentenceTransformer
 from pathlib import Path
 from groq import Groq
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 EMBEDDINGS_DIR = Path("./embeddings")
 EMBEDDINGS_DIR.mkdir(exist_ok=True)
+
+METADATA_DIR = Path("./metadata")
+METADATA_DIR.mkdir(exist_ok=True)
 
 def get_embedding_model():
     logger.info("Loading embedding model...")
@@ -86,6 +93,18 @@ class SimilaritySearchResponse(BaseModel):
     embedding_file: str
     results: List[SearchResult]
     num_results: int
+    status: str = "success"
+
+class ImageMetadata(BaseModel):
+    id: str
+    filename: str
+    title: str
+    keywords: List[str]
+    description: str
+
+class ImageUploadResponse(BaseModel):
+    filename: str
+    metadata: ImageMetadata
     status: str = "success"
 
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[Chunk]:
@@ -215,7 +234,7 @@ def call_llm(prompt: str) -> str:
     client = Groq(api_key=os.getenv("GROQ_API_KEY"))
     try:
         response = client.chat.completions.create(
-            model="llama3-8b-8192",
+            model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
             max_tokens=1000
@@ -243,6 +262,89 @@ def generate_rag_answer(query: str, filename: str, top_k: int = 3) -> str:
     except Exception as e:
         logger.error(f"RAG answer generation failed: {str(e)}")
         return "An error occurred while processing your question. Please try again."
+
+def generate_image_metadata(filename: str, image_info: str = "") -> ImageMetadata:
+    """Generate metadata for an image using LLM."""
+    import uuid
+    
+    prompt = f"""You are an AI assistant that creates metadata for images. Based on the filename and any additional information provided, generate appropriate metadata.
+
+Filename: {filename}
+Additional Info: {image_info}
+
+Please provide metadata in the following JSON format:
+{{
+    "title": "A descriptive title for the image",
+    "keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"],
+    "description": "A detailed description of what the image likely contains or represents"
+}}
+
+Make the title engaging and descriptive. Keywords should be relevant tags that would help in searching. Description should be comprehensive but concise.
+
+Output only the JSON object, no additional text."""
+
+    try:
+        metadata_json = call_llm(prompt)
+        
+        # Parse the JSON response
+        import json
+        metadata_dict = json.loads(metadata_json.strip())
+        
+        # Create ImageMetadata object
+        metadata = ImageMetadata(
+            id=str(uuid.uuid4()),
+            filename=filename,
+            title=metadata_dict.get("title", filename),
+            keywords=metadata_dict.get("keywords", []),
+            description=metadata_dict.get("description", "")
+        )
+        
+        logger.info(f"Generated metadata for image: {filename}")
+        return metadata
+        
+    except Exception as e:
+        logger.error(f"Failed to generate image metadata: {str(e)}")
+        # Return basic metadata if LLM fails
+        return ImageMetadata(
+            id=str(uuid.uuid4()),
+            filename=filename,
+            title=filename,
+            keywords=["image"],
+            description=f"Image file: {filename}"
+        )
+
+def save_image_metadata(metadata: ImageMetadata) -> str:
+    """Save image metadata to JSON file."""
+    metadata_file = METADATA_DIR / "images_metadata.json"
+    
+    # Load existing metadata or create empty list
+    if metadata_file.exists():
+        try:
+            with open(metadata_file, "r") as f:
+                metadata_list = json.load(f)
+        except:
+            metadata_list = []
+    else:
+        metadata_list = []
+    
+    # Add new metadata
+    metadata_dict = {
+        "id": metadata.id,
+        "filename": metadata.filename,
+        "title": metadata.title,
+        "keywords": metadata.keywords,
+        "description": metadata.description,
+        "created_at": str(Path(metadata_file).stat().st_mtime) if metadata_file.exists() else str(Path.cwd())
+    }
+    
+    metadata_list.append(metadata_dict)
+    
+    # Save back to file
+    with open(metadata_file, "w") as f:
+        json.dump(metadata_list, f, indent=2)
+    
+    logger.info(f"Image metadata saved to {metadata_file}")
+    return str(metadata_file)
 
 @app.get("/health", summary="Health Check")
 async def health_check():
@@ -419,6 +521,49 @@ async def search_chunks(query: str, filename: str, top_k: int = 3):
     except Exception as e:
         logger.error(f"Error during similarity search: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error during similarity search: {str(e)}")
+
+@app.post("/upload/image", response_model=ImageUploadResponse, summary="Upload Image and Generate Metadata")
+async def upload_image(file: UploadFile = File(...)):
+    logger.info(f"Received image file: {file.filename}")
+    
+    # Validate file type (allow common image formats)
+    allowed_types = [
+        "image/jpeg", "image/jpg", "image/png", "image/gif", 
+        "image/webp", "image/bmp", "image/tiff"
+    ]
+    allowed_extensions = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"]
+    
+    if file.content_type not in allowed_types or not any(file.filename.lower().endswith(ext) for ext in allowed_extensions):
+        raise HTTPException(
+            status_code=400, 
+            detail="File must be an image (JPEG, PNG, GIF, WebP, BMP, TIFF)."
+        )
+    
+    try:
+        # Read file contents to get basic info
+        contents = await file.read()
+        image_size = len(contents)
+        
+        # Create basic image info for LLM
+        image_info = f"File size: {image_size} bytes, Content type: {file.content_type}"
+        
+        # Generate metadata using LLM
+        metadata = generate_image_metadata(file.filename, image_info)
+        
+        # Save metadata to JSON file
+        metadata_path = save_image_metadata(metadata)
+        
+        logger.info(f"Successfully processed image {file.filename} and generated metadata")
+        
+        return ImageUploadResponse(
+            filename=file.filename,
+            metadata=metadata,
+            status="success"
+        )
+    
+    except Exception as e:
+        logger.error(f"Error processing image: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing image: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
