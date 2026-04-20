@@ -6,6 +6,7 @@ import logging
 import fitz
 import io
 import json
+import numpy as np
 from typing import List
 from sentence_transformers import SentenceTransformer
 from pathlib import Path
@@ -70,6 +71,18 @@ class PDFChunkedResponse(BaseModel):
     page_count: int
     chunks: List[Chunk]
     total_chunks: int
+    status: str = "success"
+
+class SearchResult(BaseModel):
+    chunk_id: str
+    text: str
+    similarity_score: float
+
+class SimilaritySearchResponse(BaseModel):
+    query: str
+    embedding_file: str
+    results: List[SearchResult]
+    num_results: int
     status: str = "success"
 
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[Chunk]:
@@ -142,6 +155,47 @@ def save_embeddings(filename: str, chunks_with_embeddings: List[ChunkWithEmbeddi
     
     logger.info(f"Embeddings saved to {embedding_file}")
     return str(embedding_file)
+
+def cosine_similarity(query_embedding: np.ndarray, chunk_embeddings: np.ndarray) -> np.ndarray:
+    query_norm = np.linalg.norm(query_embedding)
+    chunk_norms = np.linalg.norm(chunk_embeddings, axis=1)
+    
+    query_norm = max(query_norm, 1e-8)
+    chunk_norms = np.maximum(chunk_norms, 1e-8)
+    
+    similarities = np.dot(chunk_embeddings, query_embedding) / (chunk_norms * query_norm)
+    return similarities
+
+def similarity_search(query: str, embedding_file_path: str, top_k: int = 3) -> List[SearchResult]:
+
+    with open(embedding_file_path, "r") as f:
+        embedding_data = json.load(f)
+    
+    logger.info(f"Loaded {len(embedding_data)} embeddings from {embedding_file_path}")
+    
+    model = get_embedding_model()
+    query_embedding = model.encode(query, convert_to_numpy=True)
+    logger.info(f"Generated query embedding for: '{query}'")
+    
+    chunk_embeddings = np.array([item["embedding"] for item in embedding_data])
+    chunk_ids = [item["id"] for item in embedding_data]
+    chunk_texts = [item["text"] for item in embedding_data]
+    
+    similarities = cosine_similarity(query_embedding, chunk_embeddings)
+    
+    top_indices = np.argsort(similarities)[::-1][:top_k]
+    
+    results = [
+        SearchResult(
+            chunk_id=chunk_ids[idx],
+            text=chunk_texts[idx],
+            similarity_score=float(similarities[idx])
+        )
+        for idx in top_indices
+    ]
+    
+    logger.info(f"Found {len(results)} top results for query: '{query}'")
+    return results
 
 @app.get("/health", summary="Health Check")
 async def health_check():
@@ -279,6 +333,43 @@ async def upload_pdf_with_embeddings(file: UploadFile = File(...), chunk_size: i
     except Exception as e:
         logger.error(f"Error processing PDF: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing PDF: {str(e)}")
+
+@app.post("/search", response_model=SimilaritySearchResponse, summary="Search Similar Chunks Using Query")
+async def search_chunks(query: str, filename: str, top_k: int = 3):
+
+    if not query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
+    
+    if top_k < 1 or top_k > 10:
+        raise HTTPException(status_code=400, detail="top_k must be between 1 and 10.")
+    
+    try:
+        base_filename = Path(filename).stem
+        embedding_file = EMBEDDINGS_DIR / f"{base_filename}_embeddings.json"
+        
+        if not embedding_file.exists():
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Embeddings file not found for '{filename}'. Please upload the PDF first."
+            )
+        
+        results = similarity_search(query, str(embedding_file), top_k=top_k)
+        
+        logger.info(f"Similarity search completed for query: '{query}' with {len(results)} results")
+        
+        return SimilaritySearchResponse(
+            query=query,
+            embedding_file=str(embedding_file),
+            results=results,
+            num_results=len(results),
+            status="success"
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error during similarity search: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error during similarity search: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)

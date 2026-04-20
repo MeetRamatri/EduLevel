@@ -4,3 +4,4 @@ pydantic>=2.4.2
 pymupdf>=1.23.8
 python-multipart>=0.0.6
 sentence-transformers>=2.2.2
+numpy>=1.24.0
