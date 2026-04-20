@@ -1,13 +1,39 @@
 import json
 import os
 from typing import List
-from sentence_transformers import SentenceTransformer, util
+
+import numpy as np
+import google.generativeai as genai
+
 from models import ImageMetadata, ImageSearchResult
 
-# Initialize the embedding model 
-# (all-MiniLM-L6-v2 is fast, lightweight, and great for semantic search)
-MODEL_NAME = 'all-MiniLM-L6-v2'
-embedding_model = SentenceTransformer(MODEL_NAME)
+# Use Gemini embeddings via Google Gemini.
+MODEL_NAME = "gemini-1.5-mini"
+
+
+def _validate_google_api_key() -> str:
+    google_api_key = os.getenv("GOOGLE_API_KEY")
+    if not google_api_key:
+        raise RuntimeError(
+            "GOOGLE_API_KEY must be set in the environment to generate Gemini embeddings."
+        )
+    return google_api_key
+
+
+def _get_embedding(text: str) -> List[float]:
+    google_api_key = _validate_google_api_key()
+    genai.configure(api_key=google_api_key)
+    response = genai.embeddings.create(model=MODEL_NAME, input=text)
+    return response["data"][0]["embedding"]
+
+
+def _cosine_similarity(query_embedding: np.ndarray, corpus_embeddings: np.ndarray) -> np.ndarray:
+    query_norm = np.linalg.norm(query_embedding)
+    corpus_norms = np.linalg.norm(corpus_embeddings, axis=1)
+    query_norm = max(query_norm, 1e-8)
+    corpus_norms = np.maximum(corpus_norms, 1e-8)
+    return np.dot(corpus_embeddings, query_embedding) / (corpus_norms * query_norm)
+
 
 def generate_and_store_image_embeddings(
     metadata_list: List[ImageMetadata], 
@@ -16,35 +42,25 @@ def generate_and_store_image_embeddings(
     """
     Generates embeddings from description + keywords and stores them in a JSON file.
     """
-    # 1. Load existing data if the file exists so we don't overwrite it
     existing_models = {}
     if os.path.exists(json_filepath):
         try:
             with open(json_filepath, 'r', encoding='utf-8') as f:
                 existing_data = json.load(f)
-                # Store in a dict by ID for easy updating
                 existing_models = {item['id']: ImageMetadata(**item) for item in existing_data}
         except json.JSONDecodeError:
             print(f"Warning: {json_filepath} was empty or invalid. Starting fresh.")
 
-    # 2. Generate embeddings and update models
     for metadata in metadata_list:
-        # Combine description and keywords using our new schema helper method
         text_to_embed = metadata.get_embedding_text()
-        
-        # Generate embedding and convert numpy array to list for JSON serialization
-        embedding = embedding_model.encode(text_to_embed).tolist()
-        metadata.embedding = embedding
-        
-        # Update or add to our collection
+        metadata.embedding = _get_embedding(text_to_embed)
         existing_models[metadata.id] = metadata
 
-    # 3. Save everything back to the JSON file
     with open(json_filepath, 'w', encoding='utf-8') as f:
-        # Use .model_dump() for Pydantic v2 (use .dict() if on Pydantic v1)
         json.dump([m.model_dump() for m in existing_models.values()], f, indent=4)
-        
+
     print(f"Successfully saved {len(metadata_list)} embeddings to {json_filepath}")
+
 
 def retrieve_relevant_image(
     query: str, 
@@ -58,31 +74,24 @@ def retrieve_relevant_image(
     if not os.path.exists(json_filepath):
         print(f"Warning: {json_filepath} not found.")
         return []
-        
+
     with open(json_filepath, 'r', encoding='utf-8') as f:
         try:
             data = json.load(f)
         except json.JSONDecodeError:
             return []
-            
-    # Load valid models that have an embedding
+
     valid_items = [ImageMetadata(**item) for item in data if item.get("embedding")]
     if not valid_items:
         return []
-        
-    corpus_embeddings = [item.embedding for item in valid_items]
-    
-    # Generate embedding for the input query
-    query_embedding = embedding_model.encode(query)
-    
-    # Calculate cosine similarity using sentence_transformers util
-    cos_scores = util.cos_sim(query_embedding, corpus_embeddings)[0]
-    
-    # Pair scores with items and sort descending by score
+
+    corpus_embeddings = np.array([item.embedding for item in valid_items], dtype=float)
+    query_embedding = np.array(_get_embedding(query), dtype=float)
+    cos_scores = _cosine_similarity(query_embedding, corpus_embeddings)
+
     scored_items = list(zip(cos_scores.tolist(), valid_items))
     scored_items.sort(key=lambda x: x[0], reverse=True)
-    
-    # Build the result payload based on our models
+
     results = []
     for score, item in scored_items[:top_k]:
         results.append(
@@ -95,8 +104,9 @@ def retrieve_relevant_image(
                 similarity_score=float(score)
             )
         )
-        
+
     return results
+
 
 # Example Usage
 if __name__ == "__main__":
@@ -107,10 +117,9 @@ if __name__ == "__main__":
         keywords=["biology", "plant", "cell", "chloroplast", "wall"],
         description="A diagram outlining the structural components of a plant cell."
     )
-    
+
     generate_and_store_image_embeddings([sample_img])
-    
-    # Test retrieval
+
     search_query = "What does the inside of a plant cell look like?"
     matches = retrieve_relevant_image(search_query)
     if matches:

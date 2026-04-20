@@ -34,7 +34,7 @@ PDF_CHUNK_SIZE = 500
 PDF_CHUNK_OVERLAP = 50
 
 # Embedding Configuration
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "gemini-1.5-mini"
 
 # LLM Configuration
 LLM_MODEL = "llama-3.1-8b-instant"

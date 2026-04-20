@@ -2,28 +2,32 @@
 
 import logging
 import json
+import os
 import numpy as np
 from pathlib import Path
 from typing import List
-from sentence_transformers import SentenceTransformer
+import google.generativeai as genai
 
 from models import Chunk, ChunkWithEmbedding, SearchResult
 from config import EMBEDDINGS_DIR, EMBEDDING_MODEL
 
 logger = logging.getLogger(__name__)
 
-# Global embedding model (cached)
-_embedding_model = None
+
+def _validate_google_api_key() -> str:
+    google_api_key = os.getenv("GOOGLE_API_KEY")
+    if not google_api_key:
+        raise RuntimeError(
+            "GOOGLE_API_KEY must be set in the environment to generate Gemini embeddings."
+        )
+    return google_api_key
 
 
-def get_embedding_model() -> SentenceTransformer:
-    """Get or load the embedding model (cached)."""
-    global _embedding_model
-    if _embedding_model is None:
-        logger.info(f"Loading embedding model: {EMBEDDING_MODEL}")
-        _embedding_model = SentenceTransformer(EMBEDDING_MODEL)
-        logger.info("Embedding model loaded successfully.")
-    return _embedding_model
+def _get_embeddings(inputs: List[str]) -> List[List[float]]:
+    google_api_key = _validate_google_api_key()
+    genai.configure(api_key=google_api_key)
+    response = genai.embeddings.create(model=EMBEDDING_MODEL, input=inputs)
+    return [item["embedding"] for item in response["data"]]
 
 
 def generate_embeddings(chunks: List[Chunk]) -> List[ChunkWithEmbedding]:
@@ -36,17 +40,16 @@ def generate_embeddings(chunks: List[Chunk]) -> List[ChunkWithEmbedding]:
     Returns:
         List of ChunkWithEmbedding objects
     """
-    model = get_embedding_model()
     texts = [chunk.content for chunk in chunks]
     
     logger.info(f"Generating embeddings for {len(chunks)} chunks...")
-    embeddings = model.encode(texts, convert_to_numpy=False)
+    embeddings = _get_embeddings(texts)
     
     chunks_with_embeddings = [
         ChunkWithEmbedding(
             chunk_id=chunk.chunk_id,
             text=chunk.content,
-            embedding=emb.tolist() if hasattr(emb, 'tolist') else emb
+            embedding=emb
         )
         for chunk, emb in zip(chunks, embeddings)
     ]
@@ -123,11 +126,10 @@ def similarity_search(query: str, embedding_file_path: str, top_k: int = 3) -> L
     
     logger.info(f"Loaded {len(embedding_data)} embeddings from {embedding_file_path}")
     
-    model = get_embedding_model()
-    query_embedding = model.encode(query, convert_to_numpy=True)
+    query_embedding = np.array(_get_embeddings([query])[0], dtype=float)
     logger.info(f"Generated query embedding for: '{query}'")
     
-    chunk_embeddings = np.array([item["embedding"] for item in embedding_data])
+    chunk_embeddings = np.array([item["embedding"] for item in embedding_data], dtype=float)
     chunk_ids = [item["id"] for item in embedding_data]
     chunk_texts = [item["text"] for item in embedding_data]
     
