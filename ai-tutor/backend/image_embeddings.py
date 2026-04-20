@@ -23,8 +23,8 @@ def _validate_google_api_key() -> str:
 def _get_embedding(text: str) -> List[float]:
     google_api_key = _validate_google_api_key()
     genai.configure(api_key=google_api_key)
-    response = genai.embeddings.create(model=MODEL_NAME, input=text)
-    return response["data"][0]["embedding"]
+    response = genai.embed_content(model="models/embedding-001", content=text)
+    return response["embedding"]
 
 
 def _cosine_similarity(query_embedding: np.ndarray, corpus_embeddings: np.ndarray) -> np.ndarray:

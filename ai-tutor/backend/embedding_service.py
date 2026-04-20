@@ -26,8 +26,11 @@ def _validate_google_api_key() -> str:
 def _get_embeddings(inputs: List[str]) -> List[List[float]]:
     google_api_key = _validate_google_api_key()
     genai.configure(api_key=google_api_key)
-    response = genai.embeddings.create(model=EMBEDDING_MODEL, input=inputs)
-    return [item["embedding"] for item in response["data"]]
+    embeddings = []
+    for text in inputs:
+        response = genai.embed_content(model="models/embedding-001", content=text)
+        embeddings.append(response["embedding"])
+    return embeddings
 
 
 def generate_embeddings(chunks: List[Chunk]) -> List[ChunkWithEmbedding]:
