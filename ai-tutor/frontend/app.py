@@ -1,9 +1,9 @@
 import streamlit as st
 import requests
 
-API_URL = "http://localhost:8000/api/ask"
-UPLOAD_URL = "http://localhost:8000/upload/embeddings"
-UPLOAD_IMAGE_URL = "http://localhost:8000/upload/image"
+API_URL = "https://edulevel.onrender.com/api/ask"
+UPLOAD_URL = "https://edulevel.onrender.com/upload/embeddings"
+UPLOAD_IMAGE_URL = "https://edulevel.onrender.com/upload/image"
 
 st.set_page_config(page_title="AI Tutor", page_icon="🎓")
 
