@@ -23,7 +23,7 @@ def _validate_google_api_key() -> str:
 def _get_embedding(text: str) -> List[float]:
     google_api_key = _validate_google_api_key()
     genai.configure(api_key=google_api_key)
-    response = genai.embed_content(model="models/embedding-001", content=text)
+    response = genai.embed_content(model="models/text-embedding-004", content=text)
     return response["embedding"]
 
 

@@ -28,7 +28,7 @@ def _get_embeddings(inputs: List[str]) -> List[List[float]]:
     genai.configure(api_key=google_api_key)
     embeddings = []
     for text in inputs:
-        response = genai.embed_content(model="models/embedding-001", content=text)
+        response = genai.embed_content(model="models/text-embedding-004", content=text)
         embeddings.append(response["embedding"])
     return embeddings
 
