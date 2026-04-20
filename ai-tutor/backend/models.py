@@ -78,10 +78,42 @@ class ImageMetadata(BaseModel):
     title: str
     keywords: List[str]
     description: str
+    embedding: List[float] = []  # Embedding vector for semantic search
+
+    def get_embedding_text(self) -> str:
+        """Combines description and keywords for embedding generation."""
+        return f"{self.description} " + " ".join(self.keywords)
 
 
 class ImageUploadResponse(BaseModel):
     """Response model for image upload with metadata."""
     filename: str
     metadata: ImageMetadata
+    status: str = "success"
+
+
+class ImageEmbeddingResponse(BaseModel):
+    """Response model for image embedding generation."""
+    filename: str
+    metadata_id: str
+    embedding_generated: bool
+    embedding_dimensions: int
+    status: str = "success"
+
+
+class ImageSearchResult(BaseModel):
+    """Model for image similarity search results."""
+    metadata_id: str
+    filename: str
+    title: str
+    keywords: List[str]
+    description: str
+    similarity_score: float
+
+
+class ImageSimilaritySearchResponse(BaseModel):
+    """Response model for image similarity search."""
+    query: str
+    results: List[ImageSearchResult]
+    num_results: int
     status: str = "success"
