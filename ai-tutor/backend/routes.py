@@ -12,6 +12,7 @@ from pdf_service import extract_text_from_pdf, chunk_text
 from embedding_service import generate_embeddings, save_embeddings, similarity_search
 from llm_service import generate_rag_answer
 from image_service import generate_image_metadata, save_image_metadata
+from image_embeddings import retrieve_relevant_image, generate_and_store_image_embeddings
 from config import EMBEDDINGS_DIR, ALLOWED_IMAGE_TYPES, ALLOWED_IMAGE_EXTENSIONS, PDF_CHUNK_SIZE, PDF_CHUNK_OVERLAP
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,12 @@ async def ask_tutor(request: QueryRequest):
             return QueryResponse(answer="No relevant information found in the document.")
         
         answer = generate_rag_answer(request.query, chunks)
-        return QueryResponse(answer=answer)
+        
+        # Retrieve relevant image based on the generated answer
+        images = retrieve_relevant_image(query=answer, top_k=1)
+        relevant_image = images[0] if images else None
+        
+        return QueryResponse(answer=answer, image=relevant_image)
     
     except Exception as e:
         logger.error(f"Error in ask_tutor: {str(e)}")
@@ -209,6 +215,9 @@ async def upload_image(file: UploadFile = File(...)):
         
         metadata = generate_image_metadata(file.filename, image_info)
         save_image_metadata(metadata)
+        
+        # Generate and store embedding for semantic search
+        generate_and_store_image_embeddings([metadata])
         
         logger.info(f"Successfully processed image {file.filename} and generated metadata")
         
